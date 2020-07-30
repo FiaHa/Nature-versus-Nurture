@@ -1,0 +1,343 @@
+---
+title: "lettuce_git"
+author: "Sophia"
+Date: 01.08.2017
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+---
+
+
+```{r echo=F, message=F, warning=F}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(lsmeans)
+library(ggthemes)
+```
+
+#Experimental Design 
+ * 3-3.5g lettuce were inoculated with 100uL bacterial culture
+ * Lettuce was placed in a petri-dish
+ * 47mL of PBS was added into each bag for processing
+ * Dilutions of wash water was plated
+
+
+# Import and clean up the spreadsheet
+ *All Variables need to be factor or numeric
+ *Substitute detection limits, lower: 470CFU, upper: 4e5
+ 
+ 
+ 
+```{r}
+lettuce <- read.csv("Lettuce_Summary_mod.csv") %>%
+  filter(Strain!="MacConkey") 
+ # filter(Strain!="APC")
+names(lettuce)[1] <- "Condition"
+#make sure all variables are factor or numeric if needed
+lettuce_adj <- lettuce %>%
+  mutate(Replicate=as.factor(Replicate), Dilution=as.numeric(Dilution))  %>%
+  # Substitute upper detection limit for tntc counts
+  mutate(Raw=ifelse(tnt.cnt.no.growth=="tntc",(4e5)*10^Dilution,Raw)) %>%
+  # Substitute lower detection limit for zero counts
+  mutate(Raw=ifelse(Raw==0,1/(v*2)*10^Dilution,Raw)) %>%
+  # Calculate inoculum per-lettuce: Raw/10, since 100uL was added per lettuce
+  # Calculate wash water per-lettuce: Raw*47
+  mutate(cfu_lettuce=ifelse(Day=="Inoculum",Raw/100,Raw*47)) 
+
+
+lettuce_adj %>%  
+  group_by(Strain, Condition, Day) %>%
+  filter(!is.na(cfu_lettuce)) %>%
+  summarize(average=mean(log10(cfu_lettuce)),
+            SDE=sd(log10(cfu_lettuce))/sqrt(n()),
+            n=n(),
+            zeroes=sum(cfu_lettuce==0)) -> lettuceSummary
+```
+
+#Arithemtic mean for aerobic plate count (APC)
+```{r}
+lettuce_APC <- lettuce_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_lettuce) %>%
+  filter(Strain=="APC") %>%
+  spread(key=Day,value=cfu_lettuce,sep="_") %>%
+  mutate(APC_day7_day0=log10(Day_7/Day_0))
+
+View(lettuce_APC)
+
+lettuce_APC %>%  
+  summarize(average=mean(APC_day7_day0),
+            SDE=sd(APC_day7_day0)/sqrt(n()),
+            n=n()) -> lettuce_APC_adj
+View(lettuce_APC_adj)
+```
+
+#Plots of raw counts
+```{r}
+#Plot Strain~Condition with each of the three replicates
+lettuce_adj %>%
+  filter(Day != "Inoculum") %>%
+  filter(Strain != "MacConkey") %>%
+  mutate(Day_n = as.numeric(as.character(Day))) %>%
+  ggplot(aes(x=Day_n,y=cfu_lettuce,color=Replicate)) +
+  geom_point() +
+  geom_line() +
+  scale_y_log10() +
+  facet_grid(Strain~Condition)
+
+#Plot with arithemtic mean for Strain~Condition and add fancy ribbon for standard deviation, write in bold processing days
+
+#Write out full Food Safety Lab (FSL) strain ID
+lettuceSummary$Strain2 <- factor(lettuceSummary$Strain, levels=c("FSL R9-5258", "FSL R9-5271", "FSL R9-5515", "FSL R9-5516", "FSL R9-5517","FSL R9-4077", "APC")) #re-order how it is displayed
+lettuceSummary$Day2 <- factor(lettuceSummary$Day, levels=c("Inoculum", "0", "1", "3", "4", "7")) #re-order how it is displayed
+levels(lettuceSummary$Day2)[levels(lettuceSummary$Day2)=="Inoculum"] <- "Inoc"
+levels(lettuceSummary$Strain2)[levels(lettuceSummary$Strain2)=="FSL R9-4077"] <- "FSL R9-4077*"
+
+lettuceSummary %>%
+ filter(Strain != "MacConkey") %>%
+  ggplot(aes(x=Day2,y=average, color=Strain2, group=1)) +
+ guides(color=FALSE)+
+    labs(x="Day",y="log CFU/lettuce",title=expression(italic("E. coli"))) +
+  geom_point() +
+    geom_ribbon(aes(ymin=average-SDE,
+                  ymax=average+SDE,fill=Strain2, linetype=NA), alpha=0.2) + 
+   scale_x_discrete(limits=c("Inoc","0","1","2","3","4","5", "6","7"))+
+  theme(axis.text.x = element_text(face = c('bold', 'bold', 'bold', 'plain', 'bold', 'bold', 'plain', 'plain', 'bold'), size = c('10.8', '11', '11', '9', '11', '11', '9', '9', '11'),margin=margin(-35,0,0,0)),legend.position="none")+
+  # labs( caption="Ribbon: Standard deviation")+
+   labs( caption="* Surrogate Organism")+
+  facet_grid(Condition~Strain2) 
+ggsave("Lettuce.png", width=18, height=9,  dpi=600, units=c("in"))
+```
+
+#Population dynamics will be assessed for three phases (i) initial die-off, (ii) change in bacterial numbers over the initial 24 h, and (iii) growth or die-off over 7 day storage
+
+# (i) Initial die-off
+```{r}
+
+lettuce_die_off_sur <- lettuce_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_lettuce) %>%
+    filter(Strain!="APC") %>%
+    filter(Strain!="MacConkey") %>%
+   filter(!(Strain=="FSL R9-5516" & Condition=="Glyc" & Replicate=="1")) %>% #inoculum culture didn't grow
+   filter(!(Strain=="FSL R9-5271" & Condition=="NaCl" & Replicate=="2" & Day=="Inoculum")) %>% #invalid
+  filter(!(Strain=="FSL R9-4077" & Condition=="NaCl" & Replicate=="3" & Day=="Inoculum")) %>% #invalid
+  spread(key=Day,value=cfu_lettuce,sep="_") %>%
+  mutate(initial_die_off_sur=log10(Day_0/Day_Inoculum))
+
+
+# Fit (fixed-effect) linear model
+m_die_off_anova_sur <- lm(initial_die_off_sur~Strain*Condition,
+                  data=lettuce_die_off_sur)
+anova(m_die_off_anova_sur)
+#Add effect size to ANOVA output - partial eta-squared
+anova1<-anova(m_die_off_anova_sur)
+anova1$pes <- c(anova1$'Sum Sq'[-nrow(anova1)], NA)/(anova1$'Sum Sq' + anova1$'Sum Sq'[nrow(anova1)])
+anova1
+
+
+# Since interaction is not significant, remove before doing pairwise tests:
+m_die_off_anova_sur <- update(m_die_off_anova_sur,.~.-Strain:Condition)
+anova(m_die_off_anova_sur)
+qqnorm(resid(m_die_off_anova_sur))
+qqline(resid(m_die_off_anova_sur))
+plot(predict(m_die_off_anova_sur),resid(m_die_off_anova_sur))
+
+die_off_lsm_condition_sur <- lsmeans(m_die_off_anova_sur,~Condition)
+die_off_pairwise_condition_sur <- lsmeans(die_off_lsm_condition_sur,pairwise~Condition)
+condition_cld <- cld(die_off_pairwise_condition_sur[[1]],Letters=LETTERS) %>% select(Condition,.group)
+summary(die_off_lsm_condition_sur) %>%
+  data.frame() %>%
+  left_join(condition_cld,by="Condition") %>%
+  ggplot(aes(x=Condition,y=lsmean)) +  labs(x="Condition",y="estimated means log reduction",title=(expression("Initial die-off "(italic("E. coli"))))) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#by strain
+die_off_lsm_strain_sur <- lsmeans(m_die_off_anova_sur,~Strain)
+die_off_pairwise_strain_sur <- lsmeans(die_off_lsm_strain_sur,pairwise~Strain)
+strain_cld <- cld(die_off_pairwise_strain_sur[[1]],Letters=LETTERS) %>% select(Strain,.group)
+
+summary(die_off_lsm_strain_sur) %>%
+  data.frame() %>%
+  left_join(strain_cld,by="Strain") %>%
+  ggplot(aes(x=Strain,y=lsmean)) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#Estimated means log CFU/lettuce with confidence intervals for supplemental table 2
+summary(die_off_lsm_strain_sur)
+summary(die_off_lsm_condition_sur)
+
+```
+
+# (ii) change in bacterial numbers over the initial 24 h
+```{r}
+lettuce_24h_sur <- lettuce_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_lettuce) %>%
+  filter(Strain!="APC") %>%
+  filter(Strain!="MacConkey") %>%
+  filter(!(Strain=="FSL R9-5516" & Condition=="Glyc" & Replicate=="1")) %>% #inoculum culture didn't grow
+  spread(key=Day,value=cfu_lettuce,sep="_") %>%
+  mutate(first_24h_sur=log10(Day_1/Day_0))
+
+# Fit (fixed-effect) linear model
+m_24h_anova_sur <- lm(first_24h_sur~Strain*Condition,
+                  data=lettuce_24h_sur)
+anova(m_24h_anova_sur)
+#Add effect size to ANOVA output - partial eta-squared
+anova1<-anova(m_24h_anova_sur)
+anova1$pes <- c(anova1$'Sum Sq'[-nrow(anova1)], NA)/(anova1$'Sum Sq' + anova1$'Sum Sq'[nrow(anova1)])
+anova1
+
+# Since interaction is not significant, remove before doing pairwise tests:
+m_24h_anova_sur <- update(m_24h_anova_sur,.~.-Strain:Condition)
+anova(m_24h_anova_sur)
+qqnorm(resid(m_24h_anova_sur))
+qqline(resid(m_24h_anova_sur))
+plot(predict(m_24h_anova_sur),resid(m_24h_anova_sur))
+
+first_24h_lsm_condition_sur <- lsmeans(m_24h_anova_sur,~Condition)
+first_24h_pairwise_condition_sur <- lsmeans(first_24h_lsm_condition_sur,pairwise~Condition)
+condition_cld_24h_sur <- cld(first_24h_pairwise_condition_sur[[1]],Letters=LETTERS) %>% select(Condition,.group)
+summary(first_24h_lsm_condition_sur) %>%
+  data.frame() %>%
+  left_join(condition_cld_24h_sur,by="Condition") %>%
+  ggplot(aes(x=Condition,y=lsmean)) + labs(x="Condition",y="estimated means log CFU/lettuce",title=(expression("First 24 hr "(italic("E. coli"))))) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#now by strain
+first_24h_lsm_strain_sur <- lsmeans(m_24h_anova_sur,~Strain)
+first_24h_pairwise_strain_sur <- lsmeans(first_24h_lsm_strain_sur,pairwise~Strain)
+strain_cld_24h_sur <- cld(first_24h_pairwise_strain_sur[[1]],Letters=LETTERS) %>% select(Strain,.group)
+summary(first_24h_lsm_strain_sur) %>%
+  data.frame() %>%
+  left_join(strain_cld_24h_sur,by="Strain") %>%
+  ggplot(aes(x=Strain,y=lsmean)) + 
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#Estimated means log CFU/lettuce with confidence intervals for supplemental table 2
+summary(first_24h_lsm_strain_sur)
+summary(first_24h_lsm_condition_sur)
+```
+
+(iii) die-off over 7 day storage
+```{r}
+lettuce_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_lettuce) %>%
+  filter(Strain!="APC") %>%
+  filter(Strain!="MacConkey") %>%
+    filter(!(Strain=="FSL R9-5516" & Condition=="Glyc" & Replicate=="1")) %>% #inoculum didn't grow
+  spread(key=Day,value=cfu_lettuce,sep="_") %>%
+  mutate(Nday0_Nday7=log10(Day_7/Day_0)) -> Nday0Nday7_lettuce
+
+# Fit (fixed-effect) linear model
+m_Nday0_Nday7_anova_sur <- lm(Nday0_Nday7~Strain*Condition,
+                  data=Nday0Nday7_lettuce)
+anova(m_Nday0_Nday7_anova_sur)
+#Add effect size to ANOVA output - partial eta-squared
+anova1<-anova(m_Nday0_Nday7_anova_sur)
+anova1$pes <- c(anova1$'Sum Sq'[-nrow(anova1)], NA)/(anova1$'Sum Sq' + anova1$'Sum Sq'[nrow(anova1)])
+anova1
+
+# Since interaction is not significant, remove before doing pairwise tests:
+m_Nday0_Nday7_anova_sur <- update(m_Nday0_Nday7_anova_sur,.~.-Strain:Condition)
+anova(m_Nday0_Nday7_anova_sur)
+qqnorm(resid(m_Nday0_Nday7_anova_sur))
+qqline(resid(m_Nday0_Nday7_anova_sur))
+plot(predict(m_Nday0_Nday7_anova_sur),resid(m_Nday0_Nday7_anova_sur))
+
+Nday0_Nday7_lsm_condition_sur <- lsmeans(m_Nday0_Nday7_anova_sur,~Condition)
+Nday0_Nday7_pairwise_condition_sur <- lsmeans(Nday0_Nday7_lsm_condition_sur,pairwise~Condition)
+Nday0_Nday7_cld <- cld(Nday0_Nday7_pairwise_condition_sur[[1]],Letters=LETTERS) %>% select(Condition,.group)
+summary(Nday0_Nday7_lsm_condition_sur) %>%
+  data.frame() %>%
+  left_join(Nday0_Nday7_cld,by="Condition") %>%
+  ggplot(aes(x=Condition,y=lsmean)) +  labs(x="Condition",y="estimated means log CFU/lettuce",title=(expression("Nday7-Nday0 "(italic("E. coli"))))) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+
+#and now by strain
+Nday0_Nday7_lsm_strain_sur <- lsmeans(m_Nday0_Nday7_anova_sur,~Strain)
+Nday0_Nday7_pairwise_strain_sur <- lsmeans(Nday0_Nday7_lsm_strain_sur,pairwise~Strain)
+Nday0_Nday7_strain_cld <- cld(Nday0_Nday7_pairwise_strain_sur[[1]],Letters=LETTERS) %>% select(Strain,.group)
+
+summary(Nday0_Nday7_lsm_strain_sur) %>%
+  data.frame() %>%
+  left_join(Nday0_Nday7_strain_cld,by="Strain") %>%
+  ggplot(aes(x=Strain,y=lsmean)) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#Estimated means log CFU/lettuce with confidence intervals for supplemental table 2
+summary(Nday0_Nday7_lsm_condition_sur)
+summary(Nday0_Nday7_lsm_strain_sur)
+
+
+```
+
+#We want to determine Days for Daymin and Daymax
+
+```{r}
+lettuce_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_lettuce) %>%
+  filter(Strain!="APC") %>%
+    filter(Strain!="MacConkey") %>%
+  filter(Day != "Inoculum") %>%
+  filter(Day != "0") %>%
+  spread(key=Day,value=cfu_lettuce,sep="_") -> lettuce_adj_Days
+
+#----min values
+lettuce_adj_Days_Nmin <- transform(lettuce_adj_Days, Nmin=pmin(Day_1, Day_3, Day_4, Day_7))
+
+lettuce_adj_Days_Nmin->a_min
+
+a_min$CompareColumn <- apply(a_min[, 4:7] == a_min[, 8], 1, function(x) ifelse(any(x), paste(colnames(a_min)[4:7][x], collapse=', '), 'None'))
+
+count(a_min, c("CompareColumn")) ->b_min
+
+#----- max value
+lettuce_adj_Days_Nmax <- transform(lettuce_adj_Days, Nmax=pmax(Day_1, Day_3, Day_4, Day_7))
+
+lettuce_adj_Days_Nmax->a_max
+
+a_max$CompareColumn <- apply(a_max[, 4:7] == a_max[, 8], 1, function(x) ifelse(any(x), paste(colnames(a_max)[4:7][x], collapse=', '), 'None'))
+
+count(a_max, c("CompareColumn")) ->b_max
+```
+
+# Net growth
+```{r}
+lettuce_adj%>%
+  select(Strain,Condition,Replicate,Day,cfu_lettuce) %>%
+ filter(Strain!="APC") %>%
+     filter(Strain!="MacConkey") %>%
+    filter(!is.na(cfu_lettuce)) %>%
+  spread(key=Day,value=cfu_lettuce,sep="_") %>%
+  mutate(netgrowth=log10(Day_7/Day_Inoculum)) -> lettuce_adj2
+
+lettuce_adj2 %>%  
+  group_by(Strain, Condition) %>%
+  summarize(average=mean((netgrowth)),
+            SDE=sd((netgrowth))/sqrt(n()),
+            n=n()) -> lettuceSummary_netgrowth
+
+format.data.frame(lettuceSummary_netgrowth, dec=".") ->netgrowth_Ecoli
+write_xlsx(netgrowth_Ecoli, "netgrowth_Ecoli.xlsx")
+```

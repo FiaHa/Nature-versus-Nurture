@@ -1,0 +1,375 @@
+---
+title: "Cantaloupe_git"
+author: "Sophia"
+Date: 12.11.2017
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+---
+```{r echo=F, message=F, warning=F}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(ggthemes)
+```
+
+
+#Experimental Design 
+ * One cantaloupe rind was inoculated with 100uL bacterial culture
+ * 1 single rind was placed in one petri dish and sealed and processed in falcon tube
+ * 10mL of PBS was added into each falcon tube for processing
+ * Dilutions of wash water was plated
+
+
+# Import and clean up the spreadsheet
+ *All Variables need to be factor or numeric
+ *Substitute detection limits, lower: 100 CFU, upper: 4e5
+ *Raw count in excel is CFU/mL from Qcount, taken into account dilutions but not 10mL PBS
+ 
+```{r}
+cantaloupe <- read.csv("Cantaloupe_Summary.csv")
+names(cantaloupe)[1] <- "Condition"
+#make sure all variables are factor or numeric if needed
+cantaloupe_adj <- cantaloupe %>%
+  mutate(Replicate=as.factor(Replicate), Dilution=as.numeric(Dilution))  %>%
+# Substitute upper detection limit for tntc counts
+  mutate(Raw=ifelse(tnt.cnt.no_growth=="tnt",(4e5)*10^Dilution,Raw)) %>%
+  # Substitute lower detection limit for zero counts
+  mutate(Raw=ifelse(tnt.cnt.no_growth=="no_growth",10*10^Dilution,Raw)) %>%
+  # Calculate inoculum per-rind: Raw/10, since 100uL was added per rind
+  # Calculate wash water per-rind: Raw*10
+  mutate(cfu_cantaloupe=ifelse(Day=="Inoculum",Raw/1000,Raw*10)) %>%
+    filter(!(Condition=="Stationary" & Replicate=="2" & Day=="Inoculum"))  
+
+
+#proper labeling of strains and setting order
+cantaloupe_adj$Day2 <- factor(cantaloupe_adj$Day, levels=c("Inoculum", "0", "1", "3", "4", "7")) #re-order how it is displayed
+levels(cantaloupe_adj$Strain)[levels(cantaloupe_adj$Strain)=="Inoculum"] <- "Inoc"
+levels(cantaloupe_adj$Strain)[levels(cantaloupe_adj$Strain)=="FSL C2-0008"] <- "FSL C2-0008*"
+cantaloupe_adj$Strain2 <- factor(cantaloupe_adj$Strain, levels=c("FSL J1-031", "FSL R9-0506", "FSL R9-5411", "FSL R9-5506", "FSL C2-0008*", "APC")) #re-order how it is displayed
+
+
+cantaloupe_adj %>% 
+   filter(Strain != "LMPM") %>%
+  filter(Strain != "MOX") %>%
+  select(Strain2, Condition, Day2, cfu_cantaloupe)%>%
+  group_by(Strain2, Condition, Day2) %>%
+  filter(!is.na(cfu_cantaloupe)) -> cantaloupe_adj_2
+
+cantaloupe_adj_2<-filter(cantaloupe_adj_2, cfu_cantaloupe!=0)
+
+
+cantaloupe_adj_2 %>%
+  summarize(average=mean(log10(cfu_cantaloupe)),
+            SDE=sd(log10(cfu_cantaloupe))/sqrt(n()),
+            n=n(),
+            zeroes=sum(cfu_cantaloupe==0)) -> cantaloupeSummary
+
+```
+
+
+#Arithemtic mean for aerobic plate count (APC)
+```{r}
+cantaloupe_adj %>%  
+   filter(Strain=="APC") %>% 
+    filter(Day !="2")%>% #one sample was processed on day 2
+    filter(!is.na(cfu_cantaloupe)) -> cantaloupeSummary_APC
+
+cantaloupeSummary_APC<-filter(cantaloupeSummary_APC, cfu_cantaloupe!=0)
+
+cantaloupeSummary_APC %>%
+group_by(Day) %>%
+  summarize(average=mean(log10(cfu_cantaloupe)),
+            SDE=sd(log10(cfu_cantaloupe))/sqrt(n()),
+            n=n(),
+            zeroes=sum(cfu_cantaloupe==0)) -> cantaloupeSummary_APC_2
+
+```
+
+#Plots of raw counts
+```{r}
+#Plot Strain~Condition with each of the three replicates
+cantaloupe_adj %>%
+  filter(Strain != "LMPM") %>%
+  filter(Strain != "MOX") %>%
+  mutate(Day_n = as.numeric(as.character(Day))) %>%
+  ggplot(aes(x=Day_n,y=cfu_cantaloupe,color=Replicate)) +
+  geom_point() +
+  geom_line() +
+  scale_y_log10() +
+  facet_grid(Strain~Condition)
+
+
+#Plot with arithemtic mean for Strain~Condition and add fancy ribbon for standard deviation, write in bold processing days
+cantaloupeSummary %>%
+#filter(Strain != "LMPM") %>%
+ # filter(Strain != "MOX") %>%
+ # filter(Day2 != "2") %>%
+  ggplot(aes(x=Day2,y=average, color=Strain2, group=1)) +
+ guides(color=FALSE)+
+    labs(x="Day",y="log CFU/ cantaloupe rind",title=expression(italic("Listeria")))+
+  geom_point() +
+    geom_ribbon(aes(ymin=average-SDE,
+                  ymax=average+SDE,fill=Strain2, linetype=NA), alpha=0.2) + 
+   scale_x_discrete(limits=c("Inoc","0","1","2","3","4","5", "6","7"))+
+  theme(axis.text.x = element_text(face = c('bold', 'bold', 'bold', 'plain', 'bold', 'bold', 'plain', 'plain', 'bold'), size = c('10.8', '11', '11', '9', '11', '11', '9', '9', '11'), margin=margin(-35,0,0,0)),legend.position="none")+
+  # labs( caption="Ribbon: Standard deviation")+
+     labs( caption="* Surrogate organism")+
+  facet_grid(Condition~Strain2) 
+ggsave("Cantaloupe.png", width=18, height=9,  dpi=600, units=c("in"))
+```
+
+
+#Population dynamics will be assessed for three phases (i) initial die-off, (ii) change in bacterial numbers over the initial 24 h, and (iii) growth or die-off over 7 day storage
+
+# (i) Initial die-off
+```{r}
+cantaloupe_dieoff_sur <- cantaloupe_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_cantaloupe) %>%
+  filter(Strain!="APC") %>%
+ filter(Strain != "LMPM") %>%
+  filter(Strain != "MOX") %>%
+   filter(!(Condition=="Stationary" & Replicate=="2" & Day=="Inoculum")) %>% #invalid
+  spread(key=Day,value=cfu_cantaloupe,sep="_") %>%
+  mutate(first_dieoff_sur=log10(Day_0/Day_Inoculum))
+
+
+# Fit (fixed-effect) linear model
+m_dieoff_anova_sur <- lm(first_dieoff_sur~Strain*Condition,
+                  data=cantaloupe_dieoff_sur)
+anova(m_dieoff_anova_sur)
+#Add effect size to ANOVA output - partial eta-squared
+anova1<-anova(m_dieoff_anova_sur)
+anova1$pes <- c(anova1$'Sum Sq'[-nrow(anova1)], NA)/(anova1$'Sum Sq' + anova1$'Sum Sq'[nrow(anova1)])
+anova1
+
+# Since interaction is not significant, remove before doing pairwise tests:
+m_dieoff_anova_sur <- update(m_dieoff_anova_sur,.~.-Strain:Condition)
+anova(m_dieoff_anova_sur)
+qqnorm(resid(m_dieoff_anova_sur))
+qqline(resid(m_dieoff_anova_sur))
+plot(predict(m_dieoff_anova_sur),resid(m_dieoff_anova_sur))
+
+first_dieoff_lsm_condition <- lsmeans(m_dieoff_anova_sur,~Condition)
+first_dieoff_pairwise_condition <- lsmeans(first_dieoff_lsm_condition,pairwise~Condition)
+condition_cld_dieoff <- cld(first_dieoff_pairwise_condition[[1]], Letters=LETTERS) %>% select(Condition,.group)
+summary(first_dieoff_lsm_condition) %>%
+  data.frame() %>%
+  left_join(condition_cld_dieoff,by="Condition") %>%
+  ggplot(aes(x=Condition,y=lsmean)) + labs(x="Condition",y="estimated means log reduction",title=(expression("Initial die-off "(italic("Listeria"))))) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#and now by strain
+first_dieoff_lsm_strain <- lsmeans(m_dieoff_anova_sur,~Strain)
+first_dieoff_pairwise_strain <- lsmeans(first_dieoff_lsm_strain,pairwise~Strain)
+strain_cld_dieoff <- cld(first_dieoff_pairwise_strain[[1]], Letters=LETTERS) %>% select(Strain,.group)
+summary(first_dieoff_lsm_strain) %>%
+  data.frame() %>%
+  left_join(strain_cld_dieoff,by="Strain") %>%
+  ggplot(aes(x=Strain,y=lsmean)) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+
+#Estimated means log CFU/lettuce with confidence intervals for supplemental table 3
+summary(first_dieoff_lsm_strain)
+summary(first_dieoff_lsm_condition)
+```
+
+# (ii) change in bacterial numbers over the initial 24 h
+```{r}
+
+cantaloupe_24h_sur <- cantaloupe_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_cantaloupe) %>%
+  filter(Strain!="APC") %>%
+ filter(Strain != "LMPM") %>%
+  filter(Strain != "MOX") %>%
+  spread(key=Day,value=cfu_cantaloupe,sep="_") %>%
+  mutate(first_24h_sur=log10(Day_1/Day_0))
+
+cantaloupe_24h_sur %>%
+  ggplot(aes(x=Condition,y=first_24h_sur,color=Strain)) +
+  geom_point(position=position_dodge(width=.5))
+
+
+# Fit (fixed-effect) linear model
+m_24h_anova_sur <- lm(first_24h_sur~Strain*Condition,
+                  data=cantaloupe_24h_sur)
+anova(m_24h_anova_sur)
+
+#Add effect size to ANOVA output - partial eta-squared
+anova1<-anova(m_24h_anova_sur)
+anova1$pes <- c(anova1$'Sum Sq'[-nrow(anova1)], NA)/(anova1$'Sum Sq' + anova1$'Sum Sq'[nrow(anova1)])
+anova1
+
+# Since interaction is not significant, remove before doing pairwise tests:
+m_24h_anova_sur <- update(m_24h_anova_sur,.~.-Strain:Condition)
+anova(m_24h_anova_sur)
+qqnorm(resid(m_24h_anova_sur))
+qqline(resid(m_24h_anova_sur))
+plot(predict(m_24h_anova_sur),resid(m_24h_anova_sur))
+
+
+first_24h_lsm_condition <- lsmeans(m_24h_anova_sur,~Condition)
+first_24h_pairwise_condition <- lsmeans(first_24h_lsm_condition,pairwise~Condition)
+condition_cld_24h <- cld(first_24h_pairwise_condition[[1]], Letters=LETTERS) %>% select(Condition,.group)
+summary(first_24h_lsm_condition) %>%
+  data.frame() %>%
+  left_join(condition_cld_24h,by="Condition") %>%
+  ggplot(aes(x=Condition,y=lsmean)) + labs(x="Condition",y="estimated means log reduction",title=(expression("First 24 hr "(italic("Listeria"))))) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#and now by strain
+first_24h_lsm_strain <- lsmeans(m_24h_anova_sur,~Strain)
+first_24h_pairwise_strain <- lsmeans(first_24h_lsm_strain,pairwise~Strain)
+strain_cld_24h <- cld(first_24h_pairwise_strain[[1]], Letters=LETTERS) %>% select(Strain,.group)
+summary(first_24h_lsm_strain) %>%
+  data.frame() %>%
+  left_join(strain_cld_24h,by="Strain") %>%
+  ggplot(aes(x=Strain,y=lsmean)) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#Estimated means log CFU/lettuce with confidence intervals for supplemental table 3
+summary(first_24h_lsm_strain)
+summary(first_24h_lsm_condition)
+
+```
+
+(iii) growth over 7 day storage
+#N7-Nmin
+```{r}
+cantaloupe_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_cantaloupe) %>%
+  filter(Strain!="APC") %>%
+   filter(Strain != "LMPM") %>%
+  filter(Strain != "MOX") %>%
+  spread(key=Day,value=cfu_cantaloupe,sep="_") -> cantaloupe_adj_day
+
+cantaloupe_Nmin <- transform(cantaloupe_adj_day, Nmin=pmin(Day_0, Day_1, Day_3, Day_4, Day_7))
+cantaloupe_Nmin %>%
+  mutate(compare_Day7_Nmin=log10(Day_7/Nmin)) -> cantaloupe_N7Nmin_sur
+
+#Average increase
+cantaloupe_N7Nmin_sur %>%
+  filter(!(compare_Day7_Nmin=="NA")) %>%
+  summarize(average_increase=mean(compare_Day7_Nmin),  n=n()) -> compare_Day7_Nmin_cant
+
+
+
+# Fit (fixed-effect) linear model
+m_N7Nmin_anova_sur <- lm(compare_Day7_Nmin~Strain*Condition,
+                  data=cantaloupe_N7Nmin_sur)
+anova(m_N7Nmin_anova_sur)
+#Add effect size to ANOVA output - partial eta-squared
+anova1<-anova(m_N7Nmin_anova_sur)
+anova1$pes <- c(anova1$'Sum Sq'[-nrow(anova1)], NA)/(anova1$'Sum Sq' + anova1$'Sum Sq'[nrow(anova1)])
+anova1
+
+# Since interaction is not significant, remove before doing pairwise tests:
+m_N7Nmin_anova_sur <- update(m_N7Nmin_anova_sur,.~.-Strain:Condition)
+anova(m_N7Nmin_anova_sur)
+qqnorm(resid(m_N7Nmin_anova_sur))
+qqline(resid(m_N7Nmin_anova_sur))
+plot(predict(m_N7Nmin_anova_sur),resid(m_N7Nmin_anova_sur))
+
+
+first_N7Nmin_lsm_condition <- lsmeans(m_N7Nmin_anova_sur,~Condition)
+first_N7Nmin_pairwise_condition <- lsmeans(first_N7Nmin_lsm_condition,pairwise~Condition)
+condition_cld_N7Nmin <- cld(first_N7Nmin_pairwise_condition[[1]], Letters=LETTERS) %>% select(Condition,.group)
+summary(first_N7Nmin_lsm_condition) %>%
+  data.frame() %>%
+  left_join(condition_cld_N7Nmin,by="Condition") %>%
+  ggplot(aes(x=Condition,y=lsmean)) + labs(x="Condition",y="estimated means log reduction",title=(expression("Re-growth to day 7 "(italic("Listeria"))))) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#and now by strain
+first_N7Nmin_lsm_strain <- lsmeans(m_N7Nmin_anova_sur,~Strain)
+first_N7Nmin_pairwise_strain <- lsmeans(first_N7Nmin_lsm_strain,pairwise~Strain)
+strain_cld_N7Nmin <- cld(first_N7Nmin_pairwise_strain[[1]], Letters=LETTERS) %>% select(Strain,.group)
+summary(first_N7Nmin_lsm_strain) %>%
+  data.frame() %>%
+  left_join(strain_cld_N7Nmin,by="Strain") %>%
+  ggplot(aes(x=Strain,y=lsmean)) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#Estimated means log CFU/lettuce with confidence intervals for supplemental table 3
+summary(first_N7Nmin_lsm_strain)
+summary(first_N7Nmin_lsm_condition)
+
+```
+
+
+#We want to determine Days for Daymin and Daymax
+
+```{r}
+cantaloupe_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_cantaloupe) %>%
+  filter(Strain!="APC") %>%
+   filter(Strain != "LMPM") %>%
+  filter(Strain != "MOX") %>%
+  filter(Day != "Inoculum") %>%
+  filter(Day != "0") %>%
+  filter(Day !="2")%>%
+  spread(key=Day,value=cfu_cantaloupe,sep="_") -> cantaloupe_adj_Days
+
+#----min values
+cantaloupe_adj_Days_Nmin <- transform(cantaloupe_adj_Days, Nmin=pmin(Day_1, Day_3, Day_4, Day_7))
+
+cantaloupe_adj_Days_Nmin->a_min
+
+a_min$CompareColumn <- apply(a_min[, 4:7] == a_min[, 8], 1, function(x) ifelse(any(x), paste(colnames(a_min)[4:7][x], collapse=', '), 'None'))
+
+count(a_min, c("CompareColumn")) ->b_min
+
+#----- max value
+cantaloupe_adj_Days_Nmax <- transform(cantaloupe_adj_Days, Nmax=pmax(Day_1, Day_3, Day_4, Day_7))
+
+cantaloupe_adj_Days_Nmax->a_max
+
+a_max$CompareColumn <- apply(a_max[, 4:7] == a_max[, 8], 1, function(x) ifelse(any(x), paste(colnames(a_max)[4:7][x], collapse=', '), 'None'))
+
+count(a_max, c("CompareColumn")) ->b_max
+```
+
+# Net growth
+```{r}
+cantaloupe_adj%>%
+  select(Strain,Condition,Replicate,Day,cfu_cantaloupe) %>%
+ filter(Strain!="APC") %>%
+     filter(Strain!="LMPM") %>%
+   filter(Strain!="MOX") %>%
+    filter(!is.na(cfu_cantaloupe)) %>%
+  spread(key=Day,value=cfu_cantaloupe,sep="_") %>%
+  mutate(netgrowth=log10(Day_7/Day_Inoculum)) -> cantaloupe_adj2
+
+
+
+cantaloupe_adj2 %>%
+  filter(!is.na(netgrowth))%>%
+  group_by(Strain, Condition) %>%
+  summarize(average=mean((netgrowth)),
+            SDE=sd((netgrowth))/sqrt(n()),
+            n=n()) -> cantaloupeSummary_netgrowth
+
+format.data.frame(cantaloupeSummary_netgrowth, dec=".") ->netgrowth_Listeria
+write_xlsx(netgrowth_Listeria, "netgrowth_Listeria.xlsx")
+```

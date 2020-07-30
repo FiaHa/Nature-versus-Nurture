@@ -1,0 +1,402 @@
+---
+title: "Tomato_git"
+author: "Sophia"
+Date: 12.11.2017
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+---
+
+```{r echo=F, message=F, warning=F}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(lsmeans)
+library(ggthemes)
+library(emmeans)
+library(writexl)
+```
+
+#Experimental Design 
+ * Tomatoes were inoculated with 100uL bacterial culture
+ * 3 tomatoes were placed in 1 bag
+ * 30 mL of PBS was added into each bag for processing
+ * Dilutions of wash water was plated
+
+# Import and clean up the spreadsheet
+ *All Variables need to be factor or numeric
+ *Substitute detection limits, lower: 300CFU, upper: 4e5
+ *Raw count in excel is CFU/mL from Qcount, taken into account dilutions but not 30 mL PBS
+ 
+ 
+```{r}
+tomato <- read.csv("Tomato_Summary_strain_FSL.csv")
+#make sure all variables are factor or numeric if needed
+tomato_adj <- tomato %>%
+  mutate(Replicate=as.factor(Replicate), Dilution=as.numeric(Dilution))  %>%
+  # Substitute upper detection limit for tntc counts
+  mutate(Raw=ifelse(tnt.cnt.no_growth=="tntc",(4e5)*10^Dilution,Raw)) %>%
+  # Substitute lower detection limit for zero counts
+  mutate(Raw=ifelse(tnt.cnt.no_growth=="no_growth",10*10^Dilution,Raw)) %>%
+  # Calculate inoculum per-tomato: Raw/10, since 100uL was added per tomato
+  # Calculate wash water per-tomato: Raw*10
+  mutate(cfu_tomato=ifelse(Day=="Inoculum",Raw/10,Raw*10)) %>%
+  #Divide by 3 because we had 3 tomatoes 
+  mutate(cfu_singletomato=cfu_tomato/3)
+
+
+tomato_adj %>%  
+  group_by(Strain, Condition, Day) %>%
+  filter(!is.na(cfu_singletomato)) %>%
+  summarize(average=mean(log10(cfu_singletomato)),
+            SDE=sd(log10(cfu_singletomato))/sqrt(n()),
+            n=n(),
+            zeroes=sum(cfu_singletomato==0)) -> tomatoSummary
+```
+
+#Average inoculum
+```{r}
+tomato_adj %>%  
+  filter(Day=="Inoculum")%>%
+ # group_by(Strain) %>%
+  summarize(average=mean(log10(cfu_singletomato)),
+            SDE=sd(log10(cfu_singletomato))/sqrt(n()),
+            n=n(),
+            zeroes=sum(cfu_singletomato==0)) -> tomatoSummary_Inoculum
+```
+
+
+#Arithemtic mean for aerobic plate count (APC)
+```{r}
+#Each APC count
+tomato_APC <- tomato_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_tomato) %>%
+  filter(Strain=="APC") %>%
+  spread(key=Day,value=cfu_tomato,sep="_") %>%
+  mutate(APC_day7_day0=log10(Day_7/Day_0))
+View(tomato_APC)
+
+#Summary APC per day
+tomato_adj %>%  
+  filter(Strain=="APC")%>%
+  group_by(Day) %>%
+  summarize(average=mean(log10(cfu_singletomato)),
+            SDE=sd(log10(cfu_singletomato))/sqrt(n()),
+            n=n(),
+            zeroes=sum(cfu_singletomato==0)) -> tomatoSummary_APC
+
+#APC on day 7 compared to day 0 
+tomato_APC %>%  
+  summarize(average=mean(APC_day7_day0),
+            SDE=sd(APC_day7_day0)/sqrt(n()),
+            n=n()) -> tomato_APC_adj
+View(tomato_APC_adj)
+
+```
+
+#Plots of raw counts
+```{r}
+#Plot Strain~Condition with each of the three replicates
+tomato_adj %>%
+  filter(Day != "Inoculum") %>%
+  mutate(Day_n = as.numeric(as.character(Day))) %>%
+  ggplot(aes(x=Day_n,y=cfu_singletomato,color=Replicate)) +
+  geom_point() +
+  geom_line() +
+  scale_y_log10() +
+  facet_grid(Strain~Condition)
+
+#Plot with arithemtic mean for Strain~Condition and add fancy ribbon for standard deviation, write in bold processing days
+
+#Write out full Food Safety Lab (FSL) strain ID
+tomatoSummary$Strain2 <- factor(tomatoSummary$Strain, levels=c("FSL R9-5272", "FSL R9-5344", "FSL R9-5400", "FSL R9-5502", "FSL R9-6232", "APC")) #re-order how it is displayed
+tomatoSummary$Day2 <- factor(tomatoSummary$Day, levels=c("Inoculum", "0", "1", "3", "4", "7")) #re-order how it is displayed
+levels(tomatoSummary$Day2)[levels(tomatoSummary$Day2)=="Inoculum"] <- "Inoc"
+levels(tomatoSummary$Strain2)[levels(tomatoSummary$Strain2)=="FSL R9-6232"] <- "FSL R9-6232*"
+tomatoSummary %>%
+  ggplot(aes(x=Day2,y=average, color=Strain2, group=1)) +
+ guides(color=FALSE)+
+    labs(x="Day",y="log CFU/tomato",title=expression(italic("Salmonella"))) +
+  geom_point() +
+    geom_ribbon(aes(ymin=average-SDE,
+                  ymax=average+SDE,fill=Strain2, linetype=NA), alpha=0.2) + 
+     scale_x_discrete(limits=c("Inoc","0","1","2","3","4","5", "6","7"))+
+  theme(axis.text.x = element_text(face = c('bold', 'bold', 'bold', 'plain', 'bold', 'bold', 'plain', 'plain', 'bold'), size = c('10.8', '11', '11', '9', '11', '11', '9', '9', '11'), margin=margin(-35,0,0,0)),legend.position="none")+
+ #labs( caption="Ribbon: Standard deviation")+
+   labs( caption="*Surrogate organism")+
+  facet_grid(Condition~Strain2) 
+ggsave("Tomato.png", width=18, height=9,  dpi=600, units=c("in"))
+```
+
+#Population dynamics will be assessed for three phases (i) initial die-off, (ii) change in bacterial numbers over the initial 24 h, and (iii) growth or die-off over 7 day storage
+
+# (i) Initial die-off
+```{r}
+tomato_die_off_sur <- tomato_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_singletomato) %>%
+ filter(Strain!="APC") %>%
+  spread(key=Day,value=cfu_singletomato,sep="_") %>%
+  mutate(initial_die_off_sur=log10(Day_0/Day_Inoculum))
+
+# Fit (fixed-effect) linear model
+m_die_off_anova_sur <- lm(initial_die_off_sur~Strain*Condition,
+                  data=tomato_die_off_sur)
+anova(m_die_off_anova_sur)
+
+#Add effect size to ANOVA output - partial eta-squared
+anova1<-anova(m_die_off_anova_sur)
+anova1$pes <- c(anova1$'Sum Sq'[-nrow(anova1)], NA)/(anova1$'Sum Sq' + anova1$'Sum Sq'[nrow(anova1)])
+anova1
+
+
+# Since interaction is not significant, remove before doing pairwise tests:
+m_die_off_anova <- update(m_die_off_anova_sur,.~.-Strain:Condition)
+anova(m_die_off_anova_sur)
+qqnorm(resid(m_die_off_anova_sur))
+
+qqline(resid(m_die_off_anova_sur))
+plot(predict(m_die_off_anova_sur),resid(m_die_off_anova_sur))
+
+die_off_lsm_condition_sur <- lsmeans(m_die_off_anova_sur,~Condition)
+die_off_pairwise_condition_sur <- lsmeans(die_off_lsm_condition_sur,pairwise~Condition)
+condition_cld_sur <- cld(die_off_pairwise_condition_sur[[1]],Letters=LETTERS) %>% select(Condition,.group)
+summary(die_off_lsm_condition_sur) %>%
+  data.frame() %>%
+  left_join(condition_cld_sur,by="Condition") %>%
+  ggplot(aes(x=Condition,y=lsmean)) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+    labs(x="Condition",y="estimated means log reduction",title=(expression("Initial die off "(italic("Salmonella"))))) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+summary(die_off_lsm_condition_sur)
+
+
+#and now by strain
+die_off_lsm_strain_sur <- lsmeans(m_die_off_anova_sur,~Strain)
+die_off_pairwise_strain_sur <- lsmeans(die_off_lsm_strain_sur,pairwise~Strain)
+
+strain_cld_sur <- cld(die_off_pairwise_strain_sur[[1]],Letters=LETTERS) %>% select(Strain,.group)
+summary(die_off_lsm_strain_sur) %>%
+  data.frame() %>%
+  left_join(strain_cld_sur,by="Strain") %>%
+  ggplot(aes(x=Strain,y=lsmean)) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#Estimated means log CFU/tomato with confidence intervals for supplemental table 1
+summary(die_off_lsm_strain_sur)
+summary(die_off_lsm_condition_sur)
+
+```
+
+# (ii) change in bacterial numbers over the initial 24 h
+```{r}
+
+tomato_24h_sur <- tomato_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_singletomato) %>%
+ filter(Strain!="APC") %>%
+  spread(key=Day,value=cfu_singletomato,sep="_") %>%
+  mutate(first_24h_sur=log10(Day_1/Day_0))
+
+# Fit (fixed-effect) linear model
+m_24h_anova_sur <- lm(first_24h_sur~Strain*Condition,
+                  data=tomato_24h_sur)
+anova(m_24h_anova_sur)
+#Add effect size to ANOVA output - partial eta-squared
+anova1<-anova(m_24h_anova_sur)
+anova1$pes <- c(anova1$'Sum Sq'[-nrow(anova1)], NA)/(anova1$'Sum Sq' + anova1$'Sum Sq'[nrow(anova1)])
+anova1
+
+# Since interaction is not significant, remove before doing pairwise tests:
+m_24h_anova_sur <- update(m_24h_anova_sur,.~.-Strain:Condition)
+anova(m_24h_anova_sur)
+qqnorm(resid(m_24h_anova_sur))
+qqline(resid(m_24h_anova_sur))
+plot(predict(m_24h_anova_sur),resid(m_24h_anova_sur))
+
+
+first_24h_lsm_condition_sur <- lsmeans(m_24h_anova_sur,~Condition)
+first_24h_pairwise_condition_sur <- lsmeans(first_24h_lsm_condition_sur,pairwise~Condition)
+condition_cld_24h_sur <- cld(first_24h_pairwise_condition_sur[[1]], Letters=LETTERS) %>% select(Condition,.group)
+summary(first_24h_lsm_condition_sur) %>%
+  data.frame() %>%
+  left_join(condition_cld_24h_sur,by="Condition") %>%
+  ggplot(aes(x=Condition,y=lsmean)) +
+   labs(x="Condition",y="estimated means log reduction",title=(expression("First 24 h  "(italic("Salmonella"))))) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+
+#and now by strain
+first_24h_lsm_strain_sur <- lsmeans(m_24h_anova_sur,~Strain)
+first_24h_pairwise_strain_sur <- lsmeans(first_24h_lsm_strain_sur,pairwise~Strain)
+strain_cld_24h_sur <- cld(first_24h_pairwise_strain_sur[[1]],Letters=LETTERS) %>% select(Strain,.group)
+summary(first_24h_lsm_strain_sur) %>%
+  data.frame() %>%
+  left_join(strain_cld_24h_sur,by="Strain") %>%
+  ggplot(aes(x=Strain,y=lsmean)) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#Estimated means log CFU/tomato with confidence intervals for supplemental table 1
+summary(first_24h_lsm_strain_sur)
+summary(first_24h_lsm_condition_sur)
+```
+
+(iii) growth over 7 day storage
+
+```{r}
+tomato_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_singletomato) %>%
+  filter(Strain!="APC") %>%
+  spread(key=Day,value=cfu_singletomato,sep="_") -> tomato_adj_day
+
+
+#Identify lowest count throughout 7 days incubation period
+tomato_Nmin <- transform(tomato_adj_day, Nmin=pmin(Day_0, Day_1, Day_3, Day_4, Day_7))
+tomato_Nmin %>%
+  mutate(compare_Day7_Nmin=log10(Day_7/Nmin)) -> tomato_N7_Nmin
+
+tomato_N7_Nmin %>%
+  group_by(Strain,Condition) %>%
+  summarize(median=ifelse(n()==3,median(compare_Day7_Nmin),NA),
+            max=max(compare_Day7_Nmin),
+            min=min(compare_Day7_Nmin)) %>%
+  ggplot(aes(x=Condition,y=median,color=Strain)) +
+  geom_point(position = position_dodge(width=.5)) +
+  labs(caption="Bars represent minimum and maximum values; point represents median") +
+  geom_errorbar(aes(ymin=min,ymax=max),position = position_dodge(width = .5))
+
+
+# Fit (fixed-effect) linear model
+m_tomato_N7_Nmin_anova <- lm(compare_Day7_Nmin~Strain*Condition,
+                  data=tomato_N7_Nmin)
+anova(m_tomato_N7_Nmin_anova)
+#Add effect size to ANOVA output - partial eta-squared - partial eta-squared
+anova1<-anova(m_tomato_N7_Nmin_anova)
+anova1$pes <- c(anova1$'Sum Sq'[-nrow(anova1)], NA)/(anova1$'Sum Sq' + anova1$'Sum Sq'[nrow(anova1)])
+anova1
+
+
+
+# Since interaction is not significant, remove before doing pairwise tests:
+m_tomato_N7_Nmin_anova <- update(m_tomato_N7_Nmin_anova,.~.-Strain:Condition)
+anova(m_tomato_N7_Nmin_anova)
+qqnorm(resid(m_tomato_N7_Nmin_anova))
+qqline(resid(m_tomato_N7_Nmin_anova))
+plot(predict(m_tomato_N7_Nmin_anova),resid(m_tomato_N7_Nmin_anova))
+
+
+N7_Nmin__condition <- lsmeans(m_tomato_N7_Nmin_anova,~Condition)
+N7_Nmin__pairwise_condition <- lsmeans(N7_Nmin__condition,pairwise~Condition)
+condition_cld_N7_Nmin <- cld(N7_Nmin__pairwise_condition[[1]],Letters=LETTERS) %>% select(Condition,.group)
+summary(N7_Nmin__condition) %>%
+  data.frame() %>%
+  left_join(condition_cld_N7_Nmin,by="Condition") %>%
+  ggplot(aes(x=Condition,y=lsmean)) +
+  ggtitle("N7-Nmin",subtitle=NULL)+
+  labs(x="Condition",y="estimated means log CFU/tomato",title=(expression("Regrowth until day 7  "(italic("Salmonella"))))) +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+
+#and now by strain
+N7_Nmin__strain <- lsmeans(m_tomato_N7_Nmin_anova,~Strain)
+N7_Nmin__pairwise_strain <- lsmeans(N7_Nmin__strain,pairwise~Strain)
+strain_cld_N7_Nmin <- cld(N7_Nmin__pairwise_strain[[1]],Letters=LETTERS) %>% select(Strain,.group)
+summary(N7_Nmin__strain) %>%
+  data.frame() %>%
+  left_join(strain_cld_N7_Nmin,by="Strain") %>%
+  ggplot(aes(x=Strain,y=lsmean)) +
+  ggtitle("N7-Nmin",subtitle=NULL)+
+    labs(x="Condition",y="lsmeans") +
+  geom_point(position = position_dodge(width=.5)) +
+  geom_errorbar(aes(ymin=lower.CL,ymax=upper.CL),
+                position = position_dodge(.5),width=0.4) +
+  geom_text(aes(label=.group,y=upper.CL+.01),vjust=0)
+
+#Estimated means log CFU/tomato with confidence intervals for  supplemental table 1
+summary(N7_Nmin__strain)
+summary(N7_Nmin__condition)
+
+```
+
+
+#We want to determine Days for Daymin and Daymax
+
+```{r}
+tomato_adj %>%
+  select(Strain,Condition,Replicate,Day,cfu_tomato) %>%
+  filter(Strain!="APC") %>%
+  filter(Day != "Inoculum") %>%
+  filter(Day != "0") %>%
+  spread(key=Day,value=cfu_tomato,sep="_") -> tomato_adj_Days
+
+#----min values
+tomato_adj_Days_Nmin <- transform(tomato_adj_Days, Nmin=pmin(Day_1, Day_3, Day_4, Day_7))
+
+tomato_adj_Days_Nmin->a_min
+
+a_min$CompareColumn <- apply(a_min[, 4:7] == a_min[, 8], 1, function(x) ifelse(any(x), paste(colnames(a_min)[4:7][x], collapse=', '), 'None'))
+
+count(a_min, c("CompareColumn")) ->b_min
+
+#----- max value
+tomato_adj_Days_Nmax <- transform(tomato_adj_Days, Nmax=pmax(Day_1, Day_3, Day_4, Day_7))
+
+tomato_adj_Days_Nmax->a_max
+
+a_max$CompareColumn <- apply(a_max[, 4:7] == a_max[, 8], 1, function(x) ifelse(any(x), paste(colnames(a_max)[4:7][x], collapse=', '), 'None'))
+
+count(a_max, c("CompareColumn")) ->b_max
+```
+
+
+# Net growth
+```{r}
+tomato_adj%>%
+  select(Strain,Condition,Replicate,Day,cfu_singletomato) %>%
+ filter(Strain!="APC") %>%
+  spread(key=Day,value=cfu_singletomato,sep="_") %>%
+  mutate(netgrowth=log10(Day_7/Day_Inoculum)) -> tomato_adj2
+
+tomato_adj2 %>%  
+  group_by(Strain, Condition) %>%
+  summarize(average=mean((netgrowth)),
+            SDE=sd((netgrowth))/sqrt(n()),
+            n=n()) -> tomatoSummary_netgrowth
+
+format.data.frame(tomatoSummary_netgrowth, dec=".") ->netgrowth_Salmonella
+write_xlsx(netgrowth_Salmonella, "netgrowth_Salmonella.xlsx")
+
+#Arithemtic mean of bacteria recovered on day 7
+tomato_adj2 %>% 
+  group_by(Condition) %>% 
+  summarize(average=log10(mean((Day_7))),
+            SDE=log10(sd((Day_7)))/sqrt(n()),
+            n=n()) -> Day_7_mean
+  
+#High salt per day
+tomato_adj%>%
+  select(Strain,Condition,Replicate,Day,cfu_singletomato) %>%
+ filter(Strain!="APC") %>%
+  filter(Condition=="NaCl") %>%
+  group_by(Day) %>% 
+  summarize(average=log10(mean((cfu_singletomato))),
+            SDE=log10(sd((cfu_singletomato)))/sqrt(n()),
+            n=n()) -> NaCl_mean
+  
+
+```
+
