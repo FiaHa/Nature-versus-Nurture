@@ -161,7 +161,7 @@ plot(predict(m_die_off_anova_sur),resid(m_die_off_anova_sur))
 
 die_off_lsm_condition_sur <- lsmeans(m_die_off_anova_sur,~Condition)
 die_off_pairwise_condition_sur <- lsmeans(die_off_lsm_condition_sur,pairwise~Condition)
-condition_cld_sur <- cld(die_off_pairwise_condition_sur[[1]],Letters=LETTERS) %>% select(Condition,.group)
+condition_cld_sur <- CLD(die_off_pairwise_condition_sur[[1]],Letters=LETTERS) %>% select(Condition,.group)
 summary(die_off_lsm_condition_sur) %>%
   data.frame() %>%
   left_join(condition_cld_sur,by="Condition") %>%
@@ -178,7 +178,7 @@ summary(die_off_lsm_condition_sur)
 die_off_lsm_strain_sur <- lsmeans(m_die_off_anova_sur,~Strain)
 die_off_pairwise_strain_sur <- lsmeans(die_off_lsm_strain_sur,pairwise~Strain)
 
-strain_cld_sur <- cld(die_off_pairwise_strain_sur[[1]],Letters=LETTERS) %>% select(Strain,.group)
+strain_cld_sur <- CLD(die_off_pairwise_strain_sur[[1]],Letters=LETTERS) %>% select(Strain,.group)
 summary(die_off_lsm_strain_sur) %>%
   data.frame() %>%
   left_join(strain_cld_sur,by="Strain") %>%
@@ -222,7 +222,7 @@ plot(predict(m_24h_anova_sur),resid(m_24h_anova_sur))
 
 first_24h_lsm_condition_sur <- lsmeans(m_24h_anova_sur,~Condition)
 first_24h_pairwise_condition_sur <- lsmeans(first_24h_lsm_condition_sur,pairwise~Condition)
-condition_cld_24h_sur <- cld(first_24h_pairwise_condition_sur[[1]], Letters=LETTERS) %>% select(Condition,.group)
+condition_cld_24h_sur <- CLD(first_24h_pairwise_condition_sur[[1]], Letters=LETTERS) %>% select(Condition,.group)
 summary(first_24h_lsm_condition_sur) %>%
   data.frame() %>%
   left_join(condition_cld_24h_sur,by="Condition") %>%
@@ -237,7 +237,7 @@ summary(first_24h_lsm_condition_sur) %>%
 #and now by strain
 first_24h_lsm_strain_sur <- lsmeans(m_24h_anova_sur,~Strain)
 first_24h_pairwise_strain_sur <- lsmeans(first_24h_lsm_strain_sur,pairwise~Strain)
-strain_cld_24h_sur <- cld(first_24h_pairwise_strain_sur[[1]],Letters=LETTERS) %>% select(Strain,.group)
+strain_cld_24h_sur <- CLD(first_24h_pairwise_strain_sur[[1]],Letters=LETTERS) %>% select(Strain,.group)
 summary(first_24h_lsm_strain_sur) %>%
   data.frame() %>%
   left_join(strain_cld_24h_sur,by="Strain") %>%
@@ -298,7 +298,7 @@ plot(predict(m_tomato_N7_Nmin_anova),resid(m_tomato_N7_Nmin_anova))
 
 N7_Nmin__condition <- lsmeans(m_tomato_N7_Nmin_anova,~Condition)
 N7_Nmin__pairwise_condition <- lsmeans(N7_Nmin__condition,pairwise~Condition)
-condition_cld_N7_Nmin <- cld(N7_Nmin__pairwise_condition[[1]],Letters=LETTERS) %>% select(Condition,.group)
+condition_cld_N7_Nmin <- CLD(N7_Nmin__pairwise_condition[[1]],Letters=LETTERS) %>% select(Condition,.group)
 summary(N7_Nmin__condition) %>%
   data.frame() %>%
   left_join(condition_cld_N7_Nmin,by="Condition") %>%
@@ -314,7 +314,7 @@ summary(N7_Nmin__condition) %>%
 #and now by strain
 N7_Nmin__strain <- lsmeans(m_tomato_N7_Nmin_anova,~Strain)
 N7_Nmin__pairwise_strain <- lsmeans(N7_Nmin__strain,pairwise~Strain)
-strain_cld_N7_Nmin <- cld(N7_Nmin__pairwise_strain[[1]],Letters=LETTERS) %>% select(Strain,.group)
+strain_cld_N7_Nmin <- CLD(N7_Nmin__pairwise_strain[[1]],Letters=LETTERS) %>% select(Strain,.group)
 summary(N7_Nmin__strain) %>%
   data.frame() %>%
   left_join(strain_cld_N7_Nmin,by="Strain") %>%
